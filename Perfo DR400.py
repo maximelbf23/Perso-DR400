@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- STYLE CSS ---
+# --- STYLE CSS (DESIGN PRO) ---
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -21,9 +21,9 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; border-left: 5px solid #3b82f6;
     }
     .metric-value { font-size: 24px; font-weight: bold; color: #1e293b; }
-    .metric-label { font-size: 12px; color: #64748b; text-transform: uppercase; }
-    .safety-warning { background-color: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; padding: 10px; border-radius: 5px; font-weight: bold;}
-    .safety-ok { background-color: #f0fdf4; border: 1px solid #22c55e; color: #15803d; padding: 10px; border-radius: 5px; font-weight: bold;}
+    .metric-label { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 1px;}
+    .safety-warning { background-color: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center;}
+    .safety-ok { background-color: #f0fdf4; border: 1px solid #22c55e; color: #15803d; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -48,7 +48,7 @@ DB_LANDING = [
     (8000, -21, 235, 525, 180, 430), (8000, -1, 250, 555, 195, 460), (8000, 19, 270, 590, 210, 485),
 ]
 
-# --- MOTEUR DE CALCUL ---
+# --- MOTEUR DE CALCUL MATHÉMATIQUE ---
 def get_interpolated_values(db, zp_input, temp_input, weight_input):
     df = pd.DataFrame(db, columns=['zp', 'temp', 'r900', 'd900', 'r700', 'd700'])
     unique_zps = sorted(df['zp'].unique())
@@ -59,18 +59,14 @@ def get_interpolated_values(db, zp_input, temp_input, weight_input):
         sub_df = df[df['zp'] == target_zp].sort_values('temp')
         if sub_df.empty: return {'r900':0, 'd900':0, 'r700':0, 'd700':0}
         
-        # Bornage sécurisé
-        if target_t <= sub_df['temp'].min():
-            row_low = row_high = sub_df.iloc[0]
-        elif target_t >= sub_df['temp'].max():
-            row_low = row_high = sub_df.iloc[-1]
+        if target_t <= sub_df['temp'].min(): row_low = row_high = sub_df.iloc[0]
+        elif target_t >= sub_df['temp'].max(): row_low = row_high = sub_df.iloc[-1]
         else:
             row_low = sub_df[sub_df['temp'] <= target_t].iloc[-1]
             row_high = sub_df[sub_df['temp'] >= target_t].iloc[0]
             
         denom = row_high['temp'] - row_low['temp']
         ratio_t = (target_t - row_low['temp']) / denom if denom != 0 else 0
-        
         res = {}
         for col in ['r900', 'd900', 'r700', 'd700']:
             res[col] = row_low[col] + (row_high[col] - row_low[col]) * ratio_t
@@ -92,12 +88,9 @@ def get_interpolated_values(db, zp_input, temp_input, weight_input):
 
 def apply_corrections(roll, dist, wind, is_grass, context="takeoff"):
     w_factor = 1.0
-    # Vent Face (wind >= 0)
     if wind >= 0: 
-        if context == "takeoff":
-            xp, fp = [0, 10, 20, 30, 50], [1.0, 0.85, 0.65, 0.55, 0.45]
-        else:
-            xp, fp = [0, 10, 20, 30, 50], [1.0, 0.78, 0.63, 0.52, 0.40]
+        if context == "takeoff": xp, fp = [0, 10, 20, 30, 50], [1.0, 0.85, 0.65, 0.55, 0.45]
+        else: xp, fp = [0, 10, 20, 30, 50], [1.0, 0.78, 0.63, 0.52, 0.40]
         w_factor = np.interp(wind, xp, fp)
     else: # Vent arrière
         w_factor = 1.0 + (abs(wind) / 2) * 0.10
@@ -105,57 +98,49 @@ def apply_corrections(roll, dist, wind, is_grass, context="takeoff"):
     s_factor = 1.15 if is_grass else 1.0
     return roll * w_factor * s_factor, dist * w_factor * s_factor
 
-# --- MOTEUR 3D AVANCÉ ---
+def calculate_climb_gradient(zp, headwind_kt):
+    """Calcule Vz (ft/min) et Pente (%) selon le manuel et la vitesse sol."""
+    # 1. Vz théorique : 570 ft/min - 43 ft/min par 1000 ft
+    vz_fpm = 570 - (43 * (zp / 1000))
+    vz_ms = max(0, vz_fpm * 0.00508) # Conversion m/s
+    
+    # 2. Vitesse Sol (Ground Speed)
+    # Vy = 140 km/h. On approxime la TAS (True Air Speed) qui augmente légèrement avec l'altitude
+    tas_kmh = 140 * (1 + (zp/1000)*0.02) 
+    tas_ms = tas_kmh / 3.6
+    wind_ms = headwind_kt * 0.5144
+    ground_speed_ms = max(10, tas_ms - wind_ms) # Sécurité division par zéro
+    
+    # 3. Pente (%) = Vz / Vsol
+    gradient_pct = (vz_ms / ground_speed_ms) * 100
+    return gradient_pct, vz_fpm
+
+# --- MOTEUR 3D & GRAPHIQUE ---
 
 def get_coordinates(distance, heading_deg):
-    """Calcule point X,Y pour une distance et un cap."""
     rad = math.radians(heading_deg)
-    # Axe Nord = Y, Axe Est = X
     x = math.sin(rad) * distance
     y = math.cos(rad) * distance
     return x, y
 
 def create_runway_mesh(rwy_len, width, qfu, is_grass):
-    """Crée un rectangle parfait pour représenter la piste"""
-    # Vecteur direction piste (Unitaire)
+    """Crée la géométrie de la piste (Rectangle)"""
     rad = math.radians(qfu)
-    dir_x = math.sin(rad)
-    dir_y = math.cos(rad)
-    
-    # Vecteur perpendiculaire (Largeur) - Tourne de 90 deg
-    perp_x = math.cos(rad) 
-    perp_y = -math.sin(rad)
-    
+    dir_x, dir_y = math.sin(rad), math.cos(rad)
+    perp_x, perp_y = math.cos(rad), -math.sin(rad)
     half_w = width / 2
     
-    # 4 Coins du rectangle (Seuil = 0,0)
-    # Coin Arrière Gauche
-    c1_x = 0 - (perp_x * half_w)
-    c1_y = 0 - (perp_y * half_w)
-    # Coin Arrière Droit
-    c2_x = 0 + (perp_x * half_w)
-    c2_y = 0 + (perp_y * half_w)
-    # Coin Avant Droit
-    c3_x = (dir_x * rwy_len) + (perp_x * half_w)
-    c3_y = (dir_y * rwy_len) + (perp_y * half_w)
-    # Coin Avant Gauche
-    c4_x = (dir_x * rwy_len) - (perp_x * half_w)
-    c4_y = (dir_y * rwy_len) - (perp_y * half_w)
+    # 4 coins du rectangle
+    c1_x, c1_y = 0 - (perp_x * half_w), 0 - (perp_y * half_w)
+    c2_x, c2_y = 0 + (perp_x * half_w), 0 + (perp_y * half_w)
+    c3_x, c3_y = (dir_x * rwy_len) + (perp_x * half_w), (dir_y * rwy_len) + (perp_y * half_w)
+    c4_x, c4_y = (dir_x * rwy_len) - (perp_x * half_w), (dir_y * rwy_len) - (perp_y * half_w)
     
     color = '#2d6a4f' if is_grass else '#6c757d'
-    
-    # Mesh3D (2 triangles pour faire un rectangle)
-    return go.Mesh3d(
-        x=[c1_x, c2_x, c3_x, c4_x],
-        y=[c1_y, c2_y, c3_y, c4_y],
-        z=[0, 0, 0, 0],
-        color=color,
-        opacity=1,
-        i=[0, 0], j=[1, 2], k=[2, 3], # Définition des faces triangulaires
-        name='Surface Piste', hoverinfo='none'
-    )
+    return go.Mesh3d(x=[c1_x, c2_x, c3_x, c4_x], y=[c1_y, c2_y, c3_y, c4_y], z=[0, 0, 0, 0],
+                     color=color, opacity=1, i=[0, 0], j=[1, 2], k=[2, 3], name='Surface Piste', hoverinfo='none')
 
-def create_3d_visualization(rwy_data, roll_dist, total_dist, is_takeoff=True):
+def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_takeoff=True):
     qfu = rwy_data["qfu"]
     rwy_len = rwy_data["len"]
     available_len = rwy_data["tora"] if is_takeoff else rwy_data["lda"]
@@ -164,133 +149,87 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, is_takeoff=True):
 
     fig = go.Figure()
 
-    # 1. SURFACE DE PISTE (Mesh3D solide)
+    # 1. PISTE & MARQUAGES
     fig.add_trace(create_runway_mesh(rwy_len, width, qfu, is_grass))
-
-    # Marqueurs Limites
+    
     avail_x, avail_y = get_coordinates(available_len, qfu)
-    
-    # Ligne de seuil
     perp_x, perp_y = math.cos(math.radians(qfu)), -math.sin(math.radians(qfu))
-    fig.add_trace(go.Scatter3d(
-        x=[-perp_x*width/2, perp_x*width/2], 
-        y=[-perp_y*width/2, perp_y*width/2], 
-        z=[0.1, 0.1], mode='lines', line=dict(color='white', width=5), name='Seuil'
-    ))
     
-    # Ligne de fin TORA/LDA
-    fig.add_trace(go.Scatter3d(
-        x=[avail_x - perp_x*width/2, avail_x + perp_x*width/2], 
-        y=[avail_y - perp_y*width/2, avail_y + perp_y*width/2], 
-        z=[0.1, 0.1], mode='lines', line=dict(color='red', width=5, dash='solid'), name='Limite Piste'
-    ))
+    # Seuil
+    fig.add_trace(go.Scatter3d(x=[-perp_x*width/2, perp_x*width/2], y=[-perp_y*width/2, perp_y*width/2], 
+                               z=[0.1, 0.1], mode='lines', line=dict(color='white', width=5), name='Seuil'))
+    # Limite TORA/LDA
+    fig.add_trace(go.Scatter3d(x=[avail_x - perp_x*width/2, avail_x + perp_x*width/2], y=[avail_y - perp_y*width/2, avail_y + perp_y*width/2], 
+                               z=[0.1, 0.1], mode='lines', line=dict(color='red', width=5, dash='solid'), name='Limite Piste'))
 
-    # Calculs des trajectoires (Axe central)
     if is_takeoff:
         roll_x, roll_y = get_coordinates(roll_dist, qfu)
         obst_x, obst_y = get_coordinates(total_dist, qfu)
 
-        # Roulement
-        fig.add_trace(go.Scatter3d(
-            x=[0, roll_x], y=[0, roll_y], z=[0.5, 0.5], # Un peu surélevé pour visibilité
-            mode='lines', line=dict(color='#3b82f6', width=6), name='Roulement'
-        ))
-        # Rotation
-        fig.add_trace(go.Scatter3d(x=[roll_x], y=[roll_y], z=[0.5], mode='markers', marker=dict(size=5, color='#3b82f6')))
+        # Roulement (Bleu)
+        fig.add_trace(go.Scatter3d(x=[0, roll_x], y=[0, roll_y], z=[0.5, 0.5], mode='lines', line=dict(color='#3b82f6', width=6), name='Roulement'))
+        fig.add_trace(go.Scatter3d(x=[roll_x], y=[roll_y], z=[0.5], mode='markers', marker=dict(size=5, color='#3b82f6'), name='Rotation'))
         
-        # Montée
-        fig.add_trace(go.Scatter3d(
-            x=[roll_x, obst_x], y=[roll_y, obst_y], z=[0.5, 15],
-            mode='lines', line=dict(color='#60a5fa', width=6), name='Montée'
-        ))
-        # Obstacle
+        # Franchissement 15m (Bleu clair)
+        fig.add_trace(go.Scatter3d(x=[roll_x, obst_x], y=[roll_y, obst_y], z=[0.5, 15], mode='lines', line=dict(color='#60a5fa', width=6), name='Montée 15m'))
         col = 'red' if total_dist > available_len else '#10b981'
-        fig.add_trace(go.Scatter3d(
-            x=[obst_x], y=[obst_y], z=[15], mode='markers+text',
-            marker=dict(size=8, color=col), text=[f"15m ({int(total_dist)}m)"], textposition="top center"
-        ))
-        title = f"Décollage - QFU {qfu}°"
+        fig.add_trace(go.Scatter3d(x=[obst_x], y=[obst_y], z=[15], mode='markers+text', marker=dict(size=8, color=col), 
+                                   text=[f"15m ({int(total_dist)}m)"], textposition="top center", name='Passage 50ft'))
+        
+        # Montée établie (Vert) - NOUVEAU
+        if gradient_pct > 0:
+            # On projette 1000m plus loin pour voir la pente
+            proj_dist = 1000 
+            ext_x, ext_y = get_coordinates(total_dist + proj_dist, qfu)
+            ext_z = 15 + (proj_dist * (gradient_pct / 100)) # Hauteur atteinte
+            
+            fig.add_trace(go.Scatter3d(x=[obst_x, ext_x], y=[obst_y, ext_y], z=[15, ext_z], 
+                                       mode='lines', line=dict(color='#22c55e', width=5, dash='dash'), name='Trajectoire Vy'))
+            fig.add_trace(go.Scatter3d(x=[ext_x], y=[ext_y], z=[ext_z], mode='markers+text', marker=dict(size=4, color='#22c55e'), 
+                                       text=[f"Alt +1km: {int(ext_z)}m"], textposition="top center", showlegend=False))
+            
+        title = f"Décollage - QFU {qfu}° - Pente {gradient_pct:.1f}%"
     else:
         # Atterrissage
         air_dist_horiz = total_dist - roll_dist
         touch_x, touch_y = get_coordinates(air_dist_horiz, qfu)
         stop_x, stop_y = get_coordinates(total_dist, qfu)
         
-        # Descente
-        fig.add_trace(go.Scatter3d(
-            x=[0, touch_x], y=[0, touch_y], z=[15, 0.5],
-            mode='lines', line=dict(color='#f97316', width=6), name='Approche'
-        ))
-        # Toucher
-        fig.add_trace(go.Scatter3d(x=[touch_x], y=[touch_y], z=[0.5], mode='markers', marker=dict(size=5, color='#f97316')))
+        fig.add_trace(go.Scatter3d(x=[0, touch_x], y=[0, touch_y], z=[15, 0.5], mode='lines', line=dict(color='#f97316', width=6), name='Finale'))
+        fig.add_trace(go.Scatter3d(x=[touch_x], y=[touch_y], z=[0.5], mode='markers', marker=dict(size=5, color='#f97316'), name='Toucher'))
+        fig.add_trace(go.Scatter3d(x=[touch_x, stop_x], y=[touch_y, stop_y], z=[0.5, 0.5], mode='lines', line=dict(color='#fb923c', width=6), name='Freinage'))
         
-        # Freinage
-        fig.add_trace(go.Scatter3d(
-            x=[touch_x, stop_x], y=[touch_y, stop_y], z=[0.5, 0.5],
-            mode='lines', line=dict(color='#fb923c', width=6), name='Freinage'
-        ))
-        # Arrêt
         col = 'red' if total_dist > available_len else '#10b981'
-        fig.add_trace(go.Scatter3d(
-            x=[stop_x], y=[stop_y], z=[0.5], mode='markers+text',
-            marker=dict(size=8, color=col, symbol='square'), text=[f"Arrêt ({int(total_dist)}m)"], textposition="top center"
-        ))
+        fig.add_trace(go.Scatter3d(x=[stop_x], y=[stop_y], z=[0.5], mode='markers+text', marker=dict(size=8, color=col, symbol='square'), 
+                                   text=[f"Arrêt ({int(total_dist)}m)"], textposition="top center", name='Arrêt'))
         title = f"Atterrissage - QFU {qfu}°"
 
-    # --- CAMÉRA INTELLIGENTE ---
-    # On place la caméra "derrière" le seuil (0,0) en fonction du QFU
-    # Vecteur unitaire inverse
-    rad_cam = math.radians(qfu + 180) # Opposé au QFU
-    cam_dist = max(rwy_len, 1000) * 0.8 # Distance recul caméra
-    
-    # Position caméra (x, y, z)
-    # En Plotly 3D, les coordonnées camera.eye sont relatives à la taille de la scène.
-    # On triche un peu : on force une vue alignée.
-    
-    # Pour simplifier l'UX, on calcule les bounds pour l'axe
-    max_dim = max(rwy_len, total_dist) * 1.2
-    mid_x, mid_y = get_coordinates(max_dim/2, qfu)
-    
-    # Vecteur directeur pour la caméra (Eye position relative to center)
-    # Si QFU = 33 (Nord Est) -> Caméra doit être au Sud Ouest (X neg, Y neg)
-    # Si QFU = 213 (Sud Ouest) -> Caméra doit être au Nord Est (X pos, Y pos)
-    # Eye coordinates: x,y,z are proportional to the bounding box diagonal.
-    
-    # Astuce Math: Rotation de l'œil en fonction du QFU
-    # Base view (looking North): x=0, y=-1.5, z=0.5
-    # Rotation autour de Z
-    angle_rad = math.radians(-qfu) # Rotation inverse
-    base_x, base_y = 0, -1.8
-    
+    # Caméra Intelligente
+    rad_cam = math.radians(qfu + 180)
+    angle_rad = math.radians(-qfu)
+    base_x, base_y = 0, -1.8 # Position relative standard
     rot_x = base_x * math.cos(angle_rad) - base_y * math.sin(angle_rad)
     rot_y = base_x * math.sin(angle_rad) + base_y * math.cos(angle_rad)
 
     fig.update_layout(
         title=title,
         scene=dict(
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False),
-            zaxis=dict(title="Alt (m)", range=[0, 100]),
-            aspectmode='data', # Important pour ne pas déformer la piste
-            camera=dict(
-                eye=dict(x=rot_x, y=rot_y, z=0.5), # Hauteur caméra
-                center=dict(x=0, y=0, z=0) # Regarde le Seuil
-            )
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            zaxis=dict(title="Alt (m)", range=[0, 150]), # On augmente le plafond pour voir la montée
+            aspectmode='data',
+            camera=dict(eye=dict(x=rot_x, y=rot_y, z=0.6), center=dict(x=0, y=0, z=0))
         ),
-        margin=dict(l=0, r=0, b=0, t=30),
-        height=500
+        margin=dict(l=0, r=0, b=0, t=30), height=600
     )
     return fig
 
-# --- INTERFACE UTILISATEUR ---
+# --- UI SIDEBAR ---
 with st.sidebar:
     st.title("📍 LFCS - Config")
     
-    st.subheader("Choix de la Piste")
     selected_rwy_name = st.selectbox("Piste en service", list(LFCS_RUNWAYS.keys()))
     rwy_data = LFCS_RUNWAYS[selected_rwy_name]
     
-    # Affichage infos piste
     col_p1, col_p2 = st.columns(2)
     col_p1.metric("QFU", f"{rwy_data['qfu']}°")
     col_p2.metric("Surface", "Herbe" if rwy_data['surface']=='grass' else "Dur")
@@ -304,75 +243,86 @@ with st.sidebar:
     zp = st.number_input("Alt. Pression Zp (ft)", 0, 10000, 1000, step=100)
     temp = st.number_input("Température (°C)", -30, 40, 20)
     
-    # Calcul du vent effectif
     wind_speed = st.slider("Vitesse du vent (kt)", 0, 30, 5)
     wind_dir = st.number_input("Direction du vent (°)", 0, 360, rwy_data['qfu'], step=10)
     
     wind_angle_rad = math.radians(wind_dir - rwy_data['qfu'])
     headwind_component = wind_speed * math.cos(wind_angle_rad)
-    crosswind_component = wind_speed * math.sin(wind_angle_rad)
-
+    
     st.metric("Vent Effectif", f"{int(headwind_component)} kt", 
               delta="Vent de Face" if headwind_component >= 0 else "Vent Arrière",
-              help="Positif = Face, Négatif = Arrière")
-    if abs(crosswind_component) > 15: st.warning(f"⚠️ Vent de travers fort : {int(abs(crosswind_component))} kt")
+              delta_color="normal" if headwind_component >= 0 else "inverse")
 
-# --- CALCULS ---
+# --- MAIN CALCULATIONS ---
 is_grass = rwy_data["surface"] == "grass"
+
 # Décollage
 roll_to_raw, dist_to_raw = get_interpolated_values(DB_TAKEOFF, zp, temp, weight)
 roll_to, dist_to = apply_corrections(roll_to_raw, dist_to_raw, headwind_component, is_grass, "takeoff")
+
 # Atterrissage
 roll_ldg_raw, dist_ldg_raw = get_interpolated_values(DB_LANDING, zp, temp, weight)
 roll_ldg, dist_ldg = apply_corrections(roll_ldg_raw, dist_ldg_raw, headwind_component, is_grass, "landing")
 dist_ldg_safe = dist_ldg * 1.3
 
-# --- MAIN ---
-st.title(f"✈️ Performances DR420 à Saucats (LFCS)")
-st.subheader(f"Piste {selected_rwy_name}")
+# Montée (Gradient)
+gradient_pct, vz_fpm = calculate_climb_gradient(zp, headwind_component)
 
-tab1, tab2 = st.tabs(["🛫 Décollage 3D", "🛬 Atterrissage 3D"])
+# --- MAIN TABS ---
+st.title(f"✈️ Performances DR420 à Saucats (LFCS)")
+
+tab1, tab2 = st.tabs(["🛫 Décollage & Montée", "🛬 Atterrissage"])
 
 with tab1:
-    # Métriques
-    c1, c2, c3 = st.columns(3)
-    c1.markdown(f'<div class="metric-card"><div class="metric-label">Roulement</div><div class="metric-value">{int(roll_to)} m</div></div>', unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card"><div class="metric-label">Passage 15m</div><div class="metric-value">{int(dist_to)} m</div></div>', unsafe_allow_html=True)
+    # Métriques Décollage
+    col1, col2, col3 = st.columns(3)
+    col1.markdown(f'<div class="metric-card"><div class="metric-label">Roulement Sol</div><div class="metric-value">{int(roll_to)} m</div></div>', unsafe_allow_html=True)
+    col2.markdown(f'<div class="metric-card"><div class="metric-label">Franchissement 15m</div><div class="metric-value">{int(dist_to)} m</div></div>', unsafe_allow_html=True)
     
     margin = rwy_data['tora'] - dist_to
-    margin_color = "#22c55e" if margin > 0 else "#ef4444"
-    c3.markdown(f'<div class="metric-card" style="border-left: 5px solid {margin_color}"><div class="metric-label">Marge TORA</div><div class="metric-value" style="color:{margin_color}">{int(margin)} m</div></div>', unsafe_allow_html=True)
-    
-    st.write("")
-    # Alerte Sécurité
-    if dist_to > rwy_data['tora']:
-         st.markdown(f'<div class="safety-warning">⛔ DANGER : La distance de décollage ({int(dist_to)}m) dépasse la TORA ({rwy_data["tora"]}m) !</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="safety-ok">✅ Décollage possible sur {selected_rwy_name}.</div>', unsafe_allow_html=True)
+    color_m = "#22c55e" if margin > 0 else "#ef4444"
+    col3.markdown(f'<div class="metric-card" style="border-left: 5px solid {color_m}"><div class="metric-label">Marge Restante</div><div class="metric-value" style="color:{color_m}">{int(margin)} m</div></div>', unsafe_allow_html=True)
 
-    # VISUALISATION 3D DÉCOLLAGE
-    fig_to = create_3d_visualization(rwy_data, roll_to, dist_to, is_takeoff=True)
+    st.write("")
+    
+    # Métriques Montée
+    st.subheader("Performances de Montée Initiale")
+    m1, m2, m3 = st.columns(3)
+    m1.markdown(f'<div class="metric-card" style="border-left: 5px solid #8b5cf6"><div class="metric-label">Taux (Vz)</div><div class="metric-value">{int(vz_fpm)} ft/min</div></div>', unsafe_allow_html=True)
+    
+    color_g = "#22c55e" if gradient_pct > 5 else "#f59e0b"
+    m2.markdown(f'<div class="metric-card" style="border-left: 5px solid {color_g}"><div class="metric-label">Pente Sol</div><div class="metric-value" style="color:{color_g}">{gradient_pct:.1f} %</div></div>', unsafe_allow_html=True)
+    
+    deg_pente = math.degrees(math.atan(gradient_pct/100))
+    m3.markdown(f'<div class="metric-card"><div class="metric-label">Angle de Montée</div><div class="metric-value">{deg_pente:.1f}°</div></div>', unsafe_allow_html=True)
+
+    st.write("")
+    if dist_to > rwy_data['tora']:
+        st.markdown(f'<div class="safety-warning">⛔ <b>DANGER :</b> La distance de décollage dépasse la TORA !</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="safety-ok">✅ Décollage possible (TORA OK).</div>', unsafe_allow_html=True)
+
+    # 3D CHART
+    fig_to = create_3d_visualization(rwy_data, roll_to, dist_to, gradient_pct, is_takeoff=True)
     st.plotly_chart(fig_to, use_container_width=True)
 
 with tab2:
-    # Métriques
-    c1, c2, c3 = st.columns(3)
-    c1.markdown(f'<div class="metric-card" style="border-left: 5px solid #f97316"><div class="metric-label">Distance Totale (Manuel)</div><div class="metric-value">{int(dist_ldg)} m</div></div>', unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card" style="border-left: 5px solid #f97316"><div class="metric-label">Distance + Majoration 30%</div><div class="metric-value">{int(dist_ldg_safe)} m</div></div>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    col1.markdown(f'<div class="metric-card" style="border-left: 5px solid #f97316"><div class="metric-label">Distance Totale</div><div class="metric-value">{int(dist_ldg)} m</div></div>', unsafe_allow_html=True)
+    col2.markdown(f'<div class="metric-card" style="border-left: 5px solid #f97316"><div class="metric-label">Avec Majoration x1.3</div><div class="metric-value">{int(dist_ldg_safe)} m</div></div>', unsafe_allow_html=True)
     
-    margin_ldg = rwy_data['lda'] - dist_ldg_safe
-    margin_color_ldg = "#22c55e" if margin_ldg > 0 else "#ef4444"
-    c3.markdown(f'<div class="metric-card" style="border-left: 5px solid {margin_color_ldg}"><div class="metric-label">Marge LDA (sur dist. majorée)</div><div class="metric-value" style="color:{margin_color_ldg}">{int(margin_ldg)} m</div></div>', unsafe_allow_html=True)
+    margin_l = rwy_data['lda'] - dist_ldg_safe
+    color_ml = "#22c55e" if margin_l > 0 else "#ef4444"
+    col3.markdown(f'<div class="metric-card" style="border-left: 5px solid {color_ml}"><div class="metric-label">Marge LDA (Sécu)</div><div class="metric-value" style="color:{color_ml}">{int(margin_l)} m</div></div>', unsafe_allow_html=True)
 
     st.write("")
-    # Alerte Sécurité Atterrissage
     if dist_ldg > rwy_data['lda']:
-         st.markdown(f'<div class="safety-warning">⛔ DANGER : La distance manuelle ({int(dist_ldg)}m) dépasse déjà la LDA ({rwy_data["lda"]}m) !</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="safety-warning">⛔ <b>DANGER :</b> La piste est trop courte pour atterrir !</div>', unsafe_allow_html=True)
     elif dist_ldg_safe > rwy_data['lda']:
-         st.markdown(f'<div class="safety-warning">⚠️ ATTENTION : Atterrissage court. La distance majorée dépasse la LDA. Marge de sécurité réduite.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="safety-warning">⚠️ <b>ATTENTION :</b> Atterrissage possible mais marge de sécurité x1.3 non respectée.</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="safety-ok">✅ Atterrissage possible avec marge de sécurité standard (x1.3).</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="safety-ok">✅ Atterrissage possible avec marge de sécurité.</div>', unsafe_allow_html=True)
 
-    # VISUALISATION 3D ATTERRISSAGE
+    # 3D CHART
     fig_ldg = create_3d_visualization(rwy_data, roll_ldg, dist_ldg, is_takeoff=False)
     st.plotly_chart(fig_ldg, use_container_width=True)
