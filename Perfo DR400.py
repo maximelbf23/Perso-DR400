@@ -20,18 +20,20 @@ st.markdown("""
         background-color: white; padding: 15px; border-radius: 10px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; border-left: 5px solid #3b82f6;
     }
-    .metric-value { font-size: 24px; font-weight: bold; color: #1e293b; }
-    .metric-label { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 1px;}
-    .safety-warning { background-color: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center;}
-    .safety-ok { background-color: #f0fdf4; border: 1px solid #22c55e; color: #15803d; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center;}
+    .metric-value { font-size: 22px; font-weight: bold; color: #1e293b; }
+    .metric-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px;}
+    .safety-warning { background-color: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center; font-size: 14px;}
+    .safety-ok { background-color: #f0fdf4; border: 1px solid #22c55e; color: #15803d; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center; font-size: 14px;}
+    .vac-info { background-color: #e0f2fe; border: 1px solid #0ea5e9; color: #0369a1; padding: 10px; border-radius: 5px; font-size: 13px; margin-bottom: 10px;}
     </style>
     """, unsafe_allow_html=True)
 
 # --- DONNÉES LFCS (SAUCATS) ---
+# Source: VAC LFCS 03 DEC 20 [cite: 110]
 LFCS_RUNWAYS = {
     "03 Revêtue": {"qfu": 33, "len": 800, "width": 20, "surface": "paved", "tora": 800, "lda": 800},
-    "21 Revêtue": {"qfu": 213, "len": 800, "width": 20, "surface": "paved", "tora": 800, "lda": 740},
-    "03R Herbe":  {"qfu": 33, "len": 774, "width": 80, "surface": "grass", "tora": 774, "lda": 774},
+    "21 Revêtue": {"qfu": 213, "len": 800, "width": 20, "surface": "paved", "tora": 800, "lda": 740}, # LDA 740m [cite: 110]
+    "03R Herbe":  {"qfu": 33, "len": 774, "width": 80, "surface": "grass", "tora": 774, "lda": 774}, # 774x80 [cite: 95]
     "21L Herbe":  {"qfu": 213, "len": 774, "width": 80, "surface": "grass", "tora": 774, "lda": 774},
 }
 
@@ -100,18 +102,14 @@ def apply_corrections(roll, dist, wind, is_grass, context="takeoff"):
 
 def calculate_climb_gradient(zp, headwind_kt):
     """Calcule Vz (ft/min) et Pente (%) selon le manuel et la vitesse sol."""
-    # 1. Vz théorique : 570 ft/min - 43 ft/min par 1000 ft
     vz_fpm = 570 - (43 * (zp / 1000))
-    vz_ms = max(0, vz_fpm * 0.00508) # Conversion m/s
+    vz_ms = max(0, vz_fpm * 0.00508) 
     
-    # 2. Vitesse Sol (Ground Speed)
-    # Vy = 140 km/h. On approxime la TAS (True Air Speed) qui augmente légèrement avec l'altitude
     tas_kmh = 140 * (1 + (zp/1000)*0.02) 
     tas_ms = tas_kmh / 3.6
     wind_ms = headwind_kt * 0.5144
-    ground_speed_ms = max(10, tas_ms - wind_ms) # Sécurité division par zéro
+    ground_speed_ms = max(10, tas_ms - wind_ms)
     
-    # 3. Pente (%) = Vz / Vsol
     gradient_pct = (vz_ms / ground_speed_ms) * 100
     return gradient_pct, vz_fpm
 
@@ -124,13 +122,11 @@ def get_coordinates(distance, heading_deg):
     return x, y
 
 def create_runway_mesh(rwy_len, width, qfu, is_grass):
-    """Crée la géométrie de la piste (Rectangle)"""
     rad = math.radians(qfu)
     dir_x, dir_y = math.sin(rad), math.cos(rad)
     perp_x, perp_y = math.cos(rad), -math.sin(rad)
     half_w = width / 2
     
-    # 4 coins du rectangle
     c1_x, c1_y = 0 - (perp_x * half_w), 0 - (perp_y * half_w)
     c2_x, c2_y = 0 + (perp_x * half_w), 0 + (perp_y * half_w)
     c3_x, c3_y = (dir_x * rwy_len) + (perp_x * half_w), (dir_y * rwy_len) + (perp_y * half_w)
@@ -149,16 +145,15 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
 
     fig = go.Figure()
 
-    # 1. PISTE & MARQUAGES
+    # PISTE
     fig.add_trace(create_runway_mesh(rwy_len, width, qfu, is_grass))
     
     avail_x, avail_y = get_coordinates(available_len, qfu)
     perp_x, perp_y = math.cos(math.radians(qfu)), -math.sin(math.radians(qfu))
     
-    # Seuil
+    # Seuil & Limite
     fig.add_trace(go.Scatter3d(x=[-perp_x*width/2, perp_x*width/2], y=[-perp_y*width/2, perp_y*width/2], 
                                z=[0.1, 0.1], mode='lines', line=dict(color='white', width=5), name='Seuil'))
-    # Limite TORA/LDA
     fig.add_trace(go.Scatter3d(x=[avail_x - perp_x*width/2, avail_x + perp_x*width/2], y=[avail_y - perp_y*width/2, avail_y + perp_y*width/2], 
                                z=[0.1, 0.1], mode='lines', line=dict(color='red', width=5, dash='solid'), name='Limite Piste'))
 
@@ -166,27 +161,26 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
         roll_x, roll_y = get_coordinates(roll_dist, qfu)
         obst_x, obst_y = get_coordinates(total_dist, qfu)
 
-        # Roulement (Bleu)
+        # Roulement
         fig.add_trace(go.Scatter3d(x=[0, roll_x], y=[0, roll_y], z=[0.5, 0.5], mode='lines', line=dict(color='#3b82f6', width=6), name='Roulement'))
         fig.add_trace(go.Scatter3d(x=[roll_x], y=[roll_y], z=[0.5], mode='markers', marker=dict(size=5, color='#3b82f6'), name='Rotation'))
         
-        # Franchissement 15m (Bleu clair)
+        # Montée 15m
         fig.add_trace(go.Scatter3d(x=[roll_x, obst_x], y=[roll_y, obst_y], z=[0.5, 15], mode='lines', line=dict(color='#60a5fa', width=6), name='Montée 15m'))
         col = 'red' if total_dist > available_len else '#10b981'
         fig.add_trace(go.Scatter3d(x=[obst_x], y=[obst_y], z=[15], mode='markers+text', marker=dict(size=8, color=col), 
-                                   text=[f"15m ({int(total_dist)}m)"], textposition="top center", name='Passage 50ft'))
+                                   text=[f"Obst. 15m ({int(total_dist)}m)"], textposition="top center", name='Passage 50ft'))
         
-        # Montée établie (Vert) - NOUVEAU
+        # Montée établie (+300m distance) - MODIFIÉ SELON DEMANDE
         if gradient_pct > 0:
-            # On projette 1000m plus loin pour voir la pente
-            proj_dist = 1000 
+            proj_dist = 300 # Projection de 300m demandée
             ext_x, ext_y = get_coordinates(total_dist + proj_dist, qfu)
-            ext_z = 15 + (proj_dist * (gradient_pct / 100)) # Hauteur atteinte
+            ext_z = 15 + (proj_dist * (gradient_pct / 100)) 
             
             fig.add_trace(go.Scatter3d(x=[obst_x, ext_x], y=[obst_y, ext_y], z=[15, ext_z], 
-                                       mode='lines', line=dict(color='#22c55e', width=5, dash='dash'), name='Trajectoire Vy'))
+                                       mode='lines', line=dict(color='#22c55e', width=5, dash='dash'), name='Montée Vy'))
             fig.add_trace(go.Scatter3d(x=[ext_x], y=[ext_y], z=[ext_z], mode='markers+text', marker=dict(size=4, color='#22c55e'), 
-                                       text=[f"Alt +1km: {int(ext_z)}m"], textposition="top center", showlegend=False))
+                                       text=[f"Alt à +300m: {int(ext_z)}m"], textposition="top center", showlegend=False))
             
         title = f"Décollage - QFU {qfu}° - Pente {gradient_pct:.1f}%"
     else:
@@ -207,7 +201,7 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
     # Caméra Intelligente
     rad_cam = math.radians(qfu + 180)
     angle_rad = math.radians(-qfu)
-    base_x, base_y = 0, -1.8 # Position relative standard
+    base_x, base_y = 0, -1.8 
     rot_x = base_x * math.cos(angle_rad) - base_y * math.sin(angle_rad)
     rot_y = base_x * math.sin(angle_rad) + base_y * math.cos(angle_rad)
 
@@ -215,7 +209,7 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
         title=title,
         scene=dict(
             xaxis=dict(visible=False), yaxis=dict(visible=False),
-            zaxis=dict(title="Alt (m)", range=[0, 150]), # On augmente le plafond pour voir la montée
+            zaxis=dict(title="Alt (m)", range=[0, 150]),
             aspectmode='data',
             camera=dict(eye=dict(x=rot_x, y=rot_y, z=0.6), center=dict(x=0, y=0, z=0))
         ),
@@ -230,17 +224,24 @@ with st.sidebar:
     selected_rwy_name = st.selectbox("Piste en service", list(LFCS_RUNWAYS.keys()))
     rwy_data = LFCS_RUNWAYS[selected_rwy_name]
     
-    col_p1, col_p2 = st.columns(2)
-    col_p1.metric("QFU", f"{rwy_data['qfu']}°")
-    col_p2.metric("Surface", "Herbe" if rwy_data['surface']=='grass' else "Dur")
-    col_p3, col_p4 = st.columns(2)
-    col_p3.metric("TORA", f"{rwy_data['tora']} m")
-    col_p4.metric("LDA", f"{rwy_data['lda']} m")
+    # Infos VAC Dynamiques
+    st.markdown("---")
+    st.markdown("**Informations VAC** [cite: 7, 15, 117]")
+    st.info(f"""
+    **Freq A/A:** 119.000
+    **Elev:** 192 ft
+    **QFU:** {rwy_data['qfu']}°
+    """)
+    if rwy_data['qfu'] == 33:
+        st.warning("⚠️ **03:** Virage à gauche INTERDIT après décollage.")
+    if rwy_data['qfu'] == 213:
+        st.success("✅ **21:** QFU Préférentiel.")
 
     st.markdown("---")
     st.subheader("Avion & Météo")
     weight = st.slider("Masse (kg)", 700, 900, 900)
-    zp = st.number_input("Alt. Pression Zp (ft)", 0, 10000, 1000, step=100)
+    # Altitude par défaut mise à 192 ft (VAC)
+    zp = st.number_input("Alt. Pression Zp (ft)", 0, 10000, 192, step=50)
     temp = st.number_input("Température (°C)", -30, 40, 20)
     
     wind_speed = st.slider("Vitesse du vent (kt)", 0, 30, 5)
@@ -268,8 +269,14 @@ dist_ldg_safe = dist_ldg * 1.3
 # Montée (Gradient)
 gradient_pct, vz_fpm = calculate_climb_gradient(zp, headwind_component)
 
+# Calcul distance pour atteindre 1000 ft (Tour de piste)
+# 1000 ft = 305 mètres. On commence à 15m (50ft). Reste 290m à monter.
+# Distance Sol = Hauteur à monter / (Pente% / 100)
+dist_to_pattern = dist_to + ( (305 - 15) / (gradient_pct/100) ) if gradient_pct > 0 else 9999
+
 # --- MAIN TABS ---
 st.title(f"✈️ Performances DR420 à Saucats (LFCS)")
+st.caption(f"Altitude terrain prise en compte : {zp} ft (VAC: 192 ft) ")
 
 tab1, tab2 = st.tabs(["🛫 Décollage & Montée", "🛬 Atterrissage"])
 
@@ -286,15 +293,16 @@ with tab1:
     st.write("")
     
     # Métriques Montée
-    st.subheader("Performances de Montée Initiale")
+    st.subheader("Performances de Montée")
     m1, m2, m3 = st.columns(3)
-    m1.markdown(f'<div class="metric-card" style="border-left: 5px solid #8b5cf6"><div class="metric-label">Taux (Vz)</div><div class="metric-value">{int(vz_fpm)} ft/min</div></div>', unsafe_allow_html=True)
+    m1.markdown(f'<div class="metric-card" style="border-left: 5px solid #8b5cf6"><div class="metric-label">Pente Sol</div><div class="metric-value">{gradient_pct:.1f} %</div></div>', unsafe_allow_html=True)
     
-    color_g = "#22c55e" if gradient_pct > 5 else "#f59e0b"
-    m2.markdown(f'<div class="metric-card" style="border-left: 5px solid {color_g}"><div class="metric-label">Pente Sol</div><div class="metric-value" style="color:{color_g}">{gradient_pct:.1f} %</div></div>', unsafe_allow_html=True)
+    # Affichage hauteur à +300m (demande utilisateur)
+    alt_at_300m = 15 + (300 * (gradient_pct/100)) if gradient_pct > 0 else 15
+    m2.markdown(f'<div class="metric-card" style="border-left: 5px solid #0ea5e9"><div class="metric-label">Altitude à +300m (Dist)</div><div class="metric-value">{int(alt_at_300m)} m</div></div>', unsafe_allow_html=True)
     
-    deg_pente = math.degrees(math.atan(gradient_pct/100))
-    m3.markdown(f'<div class="metric-card"><div class="metric-label">Angle de Montée</div><div class="metric-value">{deg_pente:.1f}°</div></div>', unsafe_allow_html=True)
+    # Distance pour 1000ft (Circuit)
+    m3.markdown(f'<div class="metric-card"><div class="metric-label">Dist. pour 1000ft (TDP)</div><div class="metric-value">{int(dist_to_pattern/1000)} km</div></div>', unsafe_allow_html=True)
 
     st.write("")
     if dist_to > rwy_data['tora']:
