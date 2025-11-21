@@ -30,7 +30,7 @@ st.markdown("""
 # --- DONNÉES LFCS (SAUCATS) ---
 LFCS_RUNWAYS = {
     "03 Revêtue": {"qfu": 33, "len": 800, "width": 20, "surface": "paved", "tora": 800, "lda": 800},
-    "21 Revêtue": {"qfu": 213, "len": 800, "width": 20, "surface": "paved", "tora": 800, "lda": 740}, # LDA plus courte
+    "21 Revêtue": {"qfu": 213, "len": 800, "width": 20, "surface": "paved", "tora": 800, "lda": 740},
     "03R Herbe":  {"qfu": 33, "len": 774, "width": 80, "surface": "grass", "tora": 774, "lda": 774},
     "21L Herbe":  {"qfu": 213, "len": 774, "width": 80, "surface": "grass", "tora": 774, "lda": 774},
 }
@@ -57,9 +57,20 @@ def get_interpolated_values(db, zp_input, temp_input, weight_input):
 
     def interp_temp_at_zp(target_zp, target_t):
         sub_df = df[df['zp'] == target_zp].sort_values('temp')
-        row_low = sub_df[sub_df['temp'] <= target_t].iloc[-1] if not sub_df[sub_df['temp'] <= target_t].empty else sub_df.iloc[0]
-        row_high = sub_df[sub_df['temp'] >= target_t].iloc[0] if not sub_df[sub_df['temp'] >= target_t].empty else sub_df.iloc[-1]
-        ratio_t = (target_t - row_low['temp']) / (row_high['temp'] - row_low['temp']) if row_high['temp'] != row_low['temp'] else 0
+        if sub_df.empty: return {'r900':0, 'd900':0, 'r700':0, 'd700':0}
+        
+        # Bornage sécurisé
+        if target_t <= sub_df['temp'].min():
+            row_low = row_high = sub_df.iloc[0]
+        elif target_t >= sub_df['temp'].max():
+            row_low = row_high = sub_df.iloc[-1]
+        else:
+            row_low = sub_df[sub_df['temp'] <= target_t].iloc[-1]
+            row_high = sub_df[sub_df['temp'] >= target_t].iloc[0]
+            
+        denom = row_high['temp'] - row_low['temp']
+        ratio_t = (target_t - row_low['temp']) / denom if denom != 0 else 0
+        
         res = {}
         for col in ['r900', 'd900', 'r700', 'd700']:
             res[col] = row_low[col] + (row_high[col] - row_low[col]) * ratio_t
@@ -67,7 +78,10 @@ def get_interpolated_values(db, zp_input, temp_input, weight_input):
 
     vals_low = interp_temp_at_zp(zp_low, temp_input)
     vals_high = interp_temp_at_zp(zp_high, temp_input)
-    ratio_zp = (zp_input - zp_low) / (zp_high - zp_low) if zp_high != zp_low else 0
+    
+    denom_zp = zp_high - zp_low
+    ratio_zp = (zp_input - zp_low) / denom_zp if denom_zp != 0 else 0
+    
     final_base = {k: vals_low[k] + (vals_high[k] - vals_low[k]) * ratio_zp for k in vals_low.keys()}
     
     w_clamped = max(700, min(900, weight_input)) 
@@ -78,27 +92,68 @@ def get_interpolated_values(db, zp_input, temp_input, weight_input):
 
 def apply_corrections(roll, dist, wind, is_grass, context="takeoff"):
     w_factor = 1.0
-    if context == "takeoff":
-        if wind >= 0: xp, fp = [0, 10, 20, 30, 50], [1.0, 0.85, 0.65, 0.55, 0.45]
-        else: w_factor = 1.0 + (abs(wind) / 2) * 0.10
-    else:
-        if wind >= 0: xp, fp = [0, 10, 20, 30, 50], [1.0, 0.78, 0.63, 0.52, 0.40]
-        else: w_factor = 1.0 + (abs(wind) / 2) * 0.10
-    if wind >= 0 and context != "takeoff" and 'xp' in locals(): w_factor = np.interp(wind, xp, fp)
-    elif wind >= 0 and context == "takeoff" and 'xp' in locals(): w_factor = np.interp(wind, xp, fp)
+    # Vent Face (wind >= 0)
+    if wind >= 0: 
+        if context == "takeoff":
+            xp, fp = [0, 10, 20, 30, 50], [1.0, 0.85, 0.65, 0.55, 0.45]
+        else:
+            xp, fp = [0, 10, 20, 30, 50], [1.0, 0.78, 0.63, 0.52, 0.40]
+        w_factor = np.interp(wind, xp, fp)
+    else: # Vent arrière
+        w_factor = 1.0 + (abs(wind) / 2) * 0.10
 
     s_factor = 1.15 if is_grass else 1.0
     return roll * w_factor * s_factor, dist * w_factor * s_factor
 
-# --- FONCTIONS 3D ---
+# --- MOTEUR 3D AVANCÉ ---
+
 def get_coordinates(distance, heading_deg):
-    """Convertit une distance le long d'un QFU en coordonnées X,Y"""
+    """Calcule point X,Y pour une distance et un cap."""
     rad = math.radians(heading_deg)
-    # En aviation, Nord = axe Y positif, Est = axe X positif.
-    # X = sin(heading) * dist, Y = cos(heading) * dist
+    # Axe Nord = Y, Axe Est = X
     x = math.sin(rad) * distance
     y = math.cos(rad) * distance
     return x, y
+
+def create_runway_mesh(rwy_len, width, qfu, is_grass):
+    """Crée un rectangle parfait pour représenter la piste"""
+    # Vecteur direction piste (Unitaire)
+    rad = math.radians(qfu)
+    dir_x = math.sin(rad)
+    dir_y = math.cos(rad)
+    
+    # Vecteur perpendiculaire (Largeur) - Tourne de 90 deg
+    perp_x = math.cos(rad) 
+    perp_y = -math.sin(rad)
+    
+    half_w = width / 2
+    
+    # 4 Coins du rectangle (Seuil = 0,0)
+    # Coin Arrière Gauche
+    c1_x = 0 - (perp_x * half_w)
+    c1_y = 0 - (perp_y * half_w)
+    # Coin Arrière Droit
+    c2_x = 0 + (perp_x * half_w)
+    c2_y = 0 + (perp_y * half_w)
+    # Coin Avant Droit
+    c3_x = (dir_x * rwy_len) + (perp_x * half_w)
+    c3_y = (dir_y * rwy_len) + (perp_y * half_w)
+    # Coin Avant Gauche
+    c4_x = (dir_x * rwy_len) - (perp_x * half_w)
+    c4_y = (dir_y * rwy_len) - (perp_y * half_w)
+    
+    color = '#2d6a4f' if is_grass else '#6c757d'
+    
+    # Mesh3D (2 triangles pour faire un rectangle)
+    return go.Mesh3d(
+        x=[c1_x, c2_x, c3_x, c4_x],
+        y=[c1_y, c2_y, c3_y, c4_y],
+        z=[0, 0, 0, 0],
+        color=color,
+        opacity=1,
+        i=[0, 0], j=[1, 2], k=[2, 3], # Définition des faces triangulaires
+        name='Surface Piste', hoverinfo='none'
+    )
 
 def create_3d_visualization(rwy_data, roll_dist, total_dist, is_takeoff=True):
     qfu = rwy_data["qfu"]
@@ -109,116 +164,121 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, is_takeoff=True):
 
     fig = go.Figure()
 
-    # 1. DESSINER LA PISTE (Bande au sol)
-    rwy_end_x, rwy_end_y = get_coordinates(rwy_len, qfu)
-    
-    # Couleur de la piste
-    rwy_color = '#2d6a4f' if is_grass else '#6c757d' # Vert foncé ou Gris béton
-    
-    # On dessine une ligne très épaisse pour représenter la piste
-    fig.add_trace(go.Scatter3d(
-        x=[0, rwy_end_x], y=[0, rwy_end_y], z=[0, 0],
-        mode='lines',
-        line=dict(color=rwy_color, width=width*1.5), # Largeur simulée
-        name=f'Piste {selected_rwy_name}', hoverinfo='none'
-    ))
+    # 1. SURFACE DE PISTE (Mesh3D solide)
+    fig.add_trace(create_runway_mesh(rwy_len, width, qfu, is_grass))
 
-    # Marqueur Seuil de piste (Début)
-    fig.add_trace(go.Scatter3d(
-        x=[0], y=[0], z=[0], mode='markers+text', marker=dict(size=5, color='white'),
-        text=["Seuil"], textposition="bottom center", name='Seuil'
-    ))
-    
-    # Marqueur Fin de piste disponible (TORA/LDA)
+    # Marqueurs Limites
     avail_x, avail_y = get_coordinates(available_len, qfu)
+    
+    # Ligne de seuil
+    perp_x, perp_y = math.cos(math.radians(qfu)), -math.sin(math.radians(qfu))
     fig.add_trace(go.Scatter3d(
-        x=[avail_x], y=[avail_y], z=[0], mode='markers+text', marker=dict(size=5, color='red', symbol='x'),
-        text=["Fin de Piste Dispo"], textposition="bottom center", name='Limite'
+        x=[-perp_x*width/2, perp_x*width/2], 
+        y=[-perp_y*width/2, perp_y*width/2], 
+        z=[0.1, 0.1], mode='lines', line=dict(color='white', width=5), name='Seuil'
+    ))
+    
+    # Ligne de fin TORA/LDA
+    fig.add_trace(go.Scatter3d(
+        x=[avail_x - perp_x*width/2, avail_x + perp_x*width/2], 
+        y=[avail_y - perp_y*width/2, avail_y + perp_y*width/2], 
+        z=[0.1, 0.1], mode='lines', line=dict(color='red', width=5, dash='solid'), name='Limite Piste'
     ))
 
+    # Calculs des trajectoires (Axe central)
     if is_takeoff:
-        # --- TRAJECTOIRE DÉCOLLAGE (BLEU) ---
         roll_x, roll_y = get_coordinates(roll_dist, qfu)
         obst_x, obst_y = get_coordinates(total_dist, qfu)
 
-        # Segment Sol (Roulement)
+        # Roulement
         fig.add_trace(go.Scatter3d(
-            x=[0, roll_x], y=[0, roll_y], z=[0, 0.1], # z=0.1 pour être juste au dessus de la piste
-            mode='lines', line=dict(color='#3b82f6', width=8), name='Roulement Sol'
+            x=[0, roll_x], y=[0, roll_y], z=[0.5, 0.5], # Un peu surélevé pour visibilité
+            mode='lines', line=dict(color='#3b82f6', width=6), name='Roulement'
         ))
-        # Point de Rotation
+        # Rotation
+        fig.add_trace(go.Scatter3d(x=[roll_x], y=[roll_y], z=[0.5], mode='markers', marker=dict(size=5, color='#3b82f6')))
+        
+        # Montée
         fig.add_trace(go.Scatter3d(
-            x=[roll_x], y=[roll_y], z=[0.1], mode='markers+text',
-            marker=dict(size=8, color='#3b82f6'), text=[f"Rotation ({int(roll_dist)}m)"], textposition="top center", name='Rotation'
+            x=[roll_x, obst_x], y=[roll_y, obst_y], z=[0.5, 15],
+            mode='lines', line=dict(color='#60a5fa', width=6), name='Montée'
         ))
-        # Segment Air (Montée vers 15m)
-        fig.add_trace(go.Scatter3d(
-            x=[roll_x, obst_x], y=[roll_y, obst_y], z=[0.1, 15],
-            mode='lines', line=dict(color='#60a5fa', width=8), name='Franchissement 15m'
-        ))
-        # Point 15m (50ft)
-        marker_color = 'red' if total_dist > available_len else '#10b981'
+        # Obstacle
+        col = 'red' if total_dist > available_len else '#10b981'
         fig.add_trace(go.Scatter3d(
             x=[obst_x], y=[obst_y], z=[15], mode='markers+text',
-            marker=dict(size=10, color=marker_color), text=[f"15m atteint ({int(total_dist)}m)"], textposition="top center", name='Obstacle 50ft'
+            marker=dict(size=8, color=col), text=[f"15m ({int(total_dist)}m)"], textposition="top center"
         ))
-        
-        title = f"Visualisation 3D Décollage - QFU {qfu}°"
-
+        title = f"Décollage - QFU {qfu}°"
     else:
-        # --- TRAJECTOIRE ATTERRISSAGE (ORANGE) ---
-        # Manuel: distance totale = depuis le passage des 15m au seuil jusqu'à l'arrêt.
-        # Distance de roulement = depuis le toucher jusqu'à l'arrêt.
-        # Donc, distance air = Total - Roulement.
-        
+        # Atterrissage
         air_dist_horiz = total_dist - roll_dist
-        touchdown_x, touchdown_y = get_coordinates(air_dist_horiz, qfu)
+        touch_x, touch_y = get_coordinates(air_dist_horiz, qfu)
         stop_x, stop_y = get_coordinates(total_dist, qfu)
+        
+        # Descente
+        fig.add_trace(go.Scatter3d(
+            x=[0, touch_x], y=[0, touch_y], z=[15, 0.5],
+            mode='lines', line=dict(color='#f97316', width=6), name='Approche'
+        ))
+        # Toucher
+        fig.add_trace(go.Scatter3d(x=[touch_x], y=[touch_y], z=[0.5], mode='markers', marker=dict(size=5, color='#f97316')))
+        
+        # Freinage
+        fig.add_trace(go.Scatter3d(
+            x=[touch_x, stop_x], y=[touch_y, stop_y], z=[0.5, 0.5],
+            mode='lines', line=dict(color='#fb923c', width=6), name='Freinage'
+        ))
+        # Arrêt
+        col = 'red' if total_dist > available_len else '#10b981'
+        fig.add_trace(go.Scatter3d(
+            x=[stop_x], y=[stop_y], z=[0.5], mode='markers+text',
+            marker=dict(size=8, color=col, symbol='square'), text=[f"Arrêt ({int(total_dist)}m)"], textposition="top center"
+        ))
+        title = f"Atterrissage - QFU {qfu}°"
 
-        # Segment Air (Descente depuis 15m au seuil)
-        fig.add_trace(go.Scatter3d(
-            x=[0, touchdown_x], y=[0, touchdown_y], z=[15, 0.1],
-            mode='lines', line=dict(color='#f97316', width=8), name='Approche finale'
-        ))
-        # Point de Toucher
-        fig.add_trace(go.Scatter3d(
-            x=[touchdown_x], y=[touchdown_y], z=[0.1], mode='markers+text',
-            marker=dict(size=8, color='#f97316'), text=[f"Toucher ({int(air_dist_horiz)}m du seuil)"], textposition="top center", name='Toucher'
-        ))
-        # Segment Sol (Freinage)
-        fig.add_trace(go.Scatter3d(
-            x=[touchdown_x, stop_x], y=[touchdown_y, stop_y], z=[0.1, 0.1],
-            mode='lines', line=dict(color='#fb923c', width=8), name='Roulement au sol'
-        ))
-        # Point d'Arrêt
-        marker_color = 'red' if total_dist > available_len else '#10b981'
-        fig.add_trace(go.Scatter3d(
-            x=[stop_x], y=[stop_y], z=[0.1], mode='markers+text',
-            marker=dict(size=10, color=marker_color, symbol='square'), text=[f"Arrêt complet ({int(total_dist)}m)"], textposition="top center", name='Arrêt'
-        ))
-        # Marqueur Seuil 15m
-        fig.add_trace(go.Scatter3d(
-            x=[0], y=[0], z=[15], mode='markers', marker=dict(size=5, color='orange'), name='Seuil à 50ft'
-        ))
+    # --- CAMÉRA INTELLIGENTE ---
+    # On place la caméra "derrière" le seuil (0,0) en fonction du QFU
+    # Vecteur unitaire inverse
+    rad_cam = math.radians(qfu + 180) # Opposé au QFU
+    cam_dist = max(rwy_len, 1000) * 0.8 # Distance recul caméra
+    
+    # Position caméra (x, y, z)
+    # En Plotly 3D, les coordonnées camera.eye sont relatives à la taille de la scène.
+    # On triche un peu : on force une vue alignée.
+    
+    # Pour simplifier l'UX, on calcule les bounds pour l'axe
+    max_dim = max(rwy_len, total_dist) * 1.2
+    mid_x, mid_y = get_coordinates(max_dim/2, qfu)
+    
+    # Vecteur directeur pour la caméra (Eye position relative to center)
+    # Si QFU = 33 (Nord Est) -> Caméra doit être au Sud Ouest (X neg, Y neg)
+    # Si QFU = 213 (Sud Ouest) -> Caméra doit être au Nord Est (X pos, Y pos)
+    # Eye coordinates: x,y,z are proportional to the bounding box diagonal.
+    
+    # Astuce Math: Rotation de l'œil en fonction du QFU
+    # Base view (looking North): x=0, y=-1.5, z=0.5
+    # Rotation autour de Z
+    angle_rad = math.radians(-qfu) # Rotation inverse
+    base_x, base_y = 0, -1.8
+    
+    rot_x = base_x * math.cos(angle_rad) - base_y * math.sin(angle_rad)
+    rot_y = base_x * math.sin(angle_rad) + base_y * math.cos(angle_rad)
 
-        title = f"Visualisation 3D Atterrissage - QFU {qfu}°"
-
-    # Configuration de la scène 3D
-    max_range = max(rwy_len, total_dist) * 1.1
     fig.update_layout(
         title=title,
         scene=dict(
-            xaxis=dict(title="Est (m)", range=[-max_range/2, max_range/2], showgrid=False, zeroline=False, visible=False),
-            yaxis=dict(title="Nord (m)", range=[-100, max_range], showgrid=True, zeroline=False), # On regarde vers le Nord/QFU
-            zaxis=dict(title="Altitude (m)", range=[0, 100], showgrid=True),
-            aspectratio=dict(x=1, y=3, z=0.5), # Ratio pour étirer la piste visuellement
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(title="Alt (m)", range=[0, 100]),
+            aspectmode='data', # Important pour ne pas déformer la piste
             camera=dict(
-                eye=dict(x=-1.5, y=0.2, z=0.8) # Position de la caméra (vue de côté/arrière)
+                eye=dict(x=rot_x, y=rot_y, z=0.5), # Hauteur caméra
+                center=dict(x=0, y=0, z=0) # Regarde le Seuil
             )
         ),
-        margin=dict(l=0, r=0, b=0, t=40),
-        height=500,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.5)")
+        margin=dict(l=0, r=0, b=0, t=30),
+        height=500
     )
     return fig
 
@@ -244,11 +304,10 @@ with st.sidebar:
     zp = st.number_input("Alt. Pression Zp (ft)", 0, 10000, 1000, step=100)
     temp = st.number_input("Température (°C)", -30, 40, 20)
     
-    # Calcul du vent effectif (Face/Arrière) par rapport au QFU
+    # Calcul du vent effectif
     wind_speed = st.slider("Vitesse du vent (kt)", 0, 30, 5)
     wind_dir = st.number_input("Direction du vent (°)", 0, 360, rwy_data['qfu'], step=10)
     
-    # Calcul composante de vent
     wind_angle_rad = math.radians(wind_dir - rwy_data['qfu'])
     headwind_component = wind_speed * math.cos(wind_angle_rad)
     crosswind_component = wind_speed * math.sin(wind_angle_rad)
@@ -256,7 +315,7 @@ with st.sidebar:
     st.metric("Vent Effectif", f"{int(headwind_component)} kt", 
               delta="Vent de Face" if headwind_component >= 0 else "Vent Arrière",
               help="Positif = Face, Négatif = Arrière")
-    if crosswind_component > 15: st.warning(f"⚠️ Vent de travers fort : {int(abs(crosswind_component))} kt")
+    if abs(crosswind_component) > 15: st.warning(f"⚠️ Vent de travers fort : {int(abs(crosswind_component))} kt")
 
 # --- CALCULS ---
 is_grass = rwy_data["surface"] == "grass"
