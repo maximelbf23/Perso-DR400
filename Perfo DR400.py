@@ -178,6 +178,8 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
     fig.add_trace(go.Scatter3d(x=[avail_x - perp_x*width/2, avail_x + perp_x*width/2], y=[avail_y - perp_y*width/2, avail_y + perp_y*width/2], 
                                z=[0.1, 0.1], mode='lines', line=dict(color='red', width=5, dash='solid'), name='Limite Piste'))
 
+    max_z = 50
+
     if is_takeoff:
         roll_x, roll_y = get_coordinates(roll_dist, qfu)
         obst_x, obst_y = get_coordinates(total_dist, qfu)
@@ -193,6 +195,7 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
                                    text=[f"Obst. {OBSTACLE_CLEARANCE_HEIGHT_M}m ({int(total_dist)}m)"], textposition="top center", name='Passage 50ft'))
         
         # Established climb
+        ext_z = OBSTACLE_CLEARANCE_HEIGHT_M
         if gradient_pct > 0:
             ext_x, ext_y = get_coordinates(total_dist + CLIMB_PROJECTION_DISTANCE_M, qfu)
             ext_z = OBSTACLE_CLEARANCE_HEIGHT_M + (CLIMB_PROJECTION_DISTANCE_M * (gradient_pct / 100)) 
@@ -201,7 +204,8 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
                                        mode='lines', line=dict(color='#22c55e', width=5, dash='dash'), name='Montée Vy'))
             fig.add_trace(go.Scatter3d(x=[ext_x], y=[ext_y], z=[ext_z], mode='markers+text', marker=dict(size=4, color='#22c55e'), 
                                        text=[f"Alt à +{CLIMB_PROJECTION_DISTANCE_M}m: {int(ext_z)}m"], textposition="top center", showlegend=False))
-            
+        
+        max_z = ext_z + 50
         title = f"Décollage - QFU {qfu}° - Pente {gradient_pct:.1f}%"
     else: # Landing
         air_dist_horiz = total_dist - roll_dist
@@ -227,8 +231,8 @@ def create_3d_visualization(rwy_data, roll_dist, total_dist, gradient_pct=0, is_
         title=title,
         scene=dict(
             xaxis=dict(visible=False), yaxis=dict(visible=False),
-            zaxis=dict(title="Alt (m)", range=[0, 150]),
-            aspectmode='data',
+            zaxis=dict(title="Alt (m)", range=[0, max_z]),
+            aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.4),
             camera=dict(eye=dict(x=rot_x, y=rot_y, z=0.6), center=dict(x=0, y=0, z=0))
         ),
         margin=dict(l=0, r=0, b=0, t=30), height=600
