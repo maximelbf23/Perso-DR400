@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+
+body {
+    font-family: 'Roboto', sans-serif;
+}
+
+.main {
+    background: linear-gradient(to right, #f8f9fa, #e9ecef);
+}
+
+.metric-card {
+    background-color: white;
+    padding: 20px;
+    border-radius: 15px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    text-align: center;
+    border-left: 7px solid #3b82f6;
+    transition: all 0.3s ease-in-out;
+}
+
+.metric-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+}
+
+.metric-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.metric-label {
+    font-size: 13px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+}
+
+.safety-warning {
+    background-color: #fef2f2;
+    border: 1px solid #ef4444;
+    color: #b91c1c;
+    padding: 15px;
+    border-radius: 8px;
+    font-weight: 700;
+    text-align: center;
+    font-size: 16px;
+    margin-top: 10px;
+}
+
+.safety-ok {
+    background-color: #f0fdf4;
+    border: 1px solid #22c55e;
+    color: #15803d;
+    padding: 15px;
+    border-radius: 8px;
+    font-weight: 700;
+    text-align: center;
+    font-size: 16px;
+    margin-top: 10px;
+}
+
+.vac-info {
+    background-color: #e0f2fe;
+    border: 1px solid #0ea5e9;
+    color: #0369a1;
+    padding: 15px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 10px;
+}
