@@ -203,10 +203,21 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("2. Météo & Avion")
+    
+    # SECTION MODIFIÉE : QNH & Zp
     with st.expander("Paramètres de vol", expanded=True):
         weight = st.slider("Masse (kg)", MIN_WEIGHT_KG, MAX_WEIGHT_KG, MAX_WEIGHT_KG)
-        zp = st.number_input("Alt. Pression Zp (ft)", 0, 10000, LFCS_ELEV_FT, step=50)
+        
+        # Saisie du QNH au lieu de Zp direct
+        qnh = st.number_input("QNH (hPa)", 950, 1050, 1013, help="Pression atmosphérique du jour")
         temp = st.number_input("Température (°C)", -20, 45, 20)
+
+        # Calcul automatique de Zp
+        # Zp = Elevation + (1013 - QNH) * 27
+        zp_calc = LFCS_ELEV_FT + (1013 - qnh) * 27
+        zp = max(0, int(zp_calc))
+        
+        st.caption(f"ℹ️ Altitude Pression (Zp) : **{zp} ft**")
     
     with st.expander("Vent & État Piste", expanded=True):
         wind_speed = st.slider("Vent (kt)", 0, 35, 5)
